@@ -227,11 +227,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if boot_peer_id.is_some() {
         // Listen on all interfaces and whatever port the OS assigns
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        // Start the bootstrap process
-        info!(
-            "Start bootstrap: {:?}",
-            swarm.behaviour_mut().kad.bootstrap()
-        );
     } else {
         // Listen on all interfaces and a chosen port if we're the boot node
         swarm.listen_on("/ip4/0.0.0.0/tcp/55555".parse()?)?;
@@ -239,6 +234,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Do some logging regularly
     let mut dump_interval = tokio::time::interval(Duration::from_secs(20));
+
+    // Re-bootstrap to see if it helps add more peers to the DHT
+    let mut rebootstrap_interval = tokio::time::interval(Duration::from_secs(60));
 
     // Log the protocol name
     info!(
@@ -290,19 +288,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             .collect::<Vec<_>>())
                         .collect::<Vec<Vec<_>>>()
                 );
-
-                use libp2p::kad::record::store::RecordStore;
-
-                info!(
-                    "Records: {:#?}",
-                    swarm
-                        .behaviour_mut()
-                        .kad
-                        .store_mut()
-                        .records()
-                        .map(|r| format!("{r:?}"))
-                        .collect::<Vec<_>>()
-                );
+            }
+            _ = rebootstrap_interval.tick() => {
+                if !swarm.behaviour_mut().i_am_boot {
+                    info!("Bootstrap: {:?}", swarm.behaviour_mut().kad.bootstrap());
+                }
             }
         }
     }
