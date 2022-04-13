@@ -120,13 +120,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 } => {
                     if is_new_peer {
                         // I wanna see only the new peers added to the DHT
-                        info!("{event:#?}");
+                        info!("KademliaEvent::{event:#?}");
                     } else {
-                        trace!("{event:#?}");
+                        trace!("KademliaEvent::{event:#?}");
                     }
                 }
                 other_kad_event => {
-                    trace!("{other_kad_event:?}");
+                    trace!("KademliaEvent::{other_kad_event:?}");
                 }
             }
         }
@@ -165,7 +165,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         self.identify_cache.insert(peer_id);
                     }
                 } else {
-                    trace!("{event:#?}");
+                    trace!("IdentifyEvent::{event:#?}");
                 }
             }
         }
@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cfg.set_query_timeout(ONE_MINUTE)
             .set_provider_publication_interval(Some(ONE_MINUTE))
             .set_provider_record_ttl(FOREVER)
-            .set_publication_interval(Some(TEN_MINUTES))
+            .set_publication_interval(Some(ONE_MINUTE))
             .set_record_ttl(FOREVER)
             .set_replication_interval(Some(ONE_MINUTE))
             .set_protocol_name(Cow::from(&PROTOCOL[..]));
@@ -286,9 +286,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .kbuckets()
                         .map(|kbucket| kbucket
                             .iter()
-                            .map(|entry| entry.node.key.preimage().clone())
+                            .map(|entry| (entry.node.key.preimage().clone(), entry.node.value.clone(), entry.status))
                             .collect::<Vec<_>>())
                         .collect::<Vec<Vec<_>>>()
+                );
+
+                use libp2p::kad::record::store::RecordStore;
+
+                info!(
+                    "Records: {:#?}",
+                    swarm
+                        .behaviour_mut()
+                        .kad
+                        .store_mut()
+                        .records()
+                        .map(|r| format!("{r:?}"))
+                        .collect::<Vec<_>>()
                 );
             }
         }
