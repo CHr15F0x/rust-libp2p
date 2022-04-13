@@ -13,6 +13,7 @@
 use futures::StreamExt;
 use libp2p::{
     core::{muxing, transport, upgrade},
+    identify::{Identify, IdentifyConfig, IdentifyEvent},
     identity,
     kad::{record::store::MemoryStore, Kademlia, KademliaConfig, KademliaEvent, QueryResult},
     mplex,
@@ -28,7 +29,7 @@ use libp2p::{
     Transport,
 };
 use log::{debug, info, trace};
-use std::{borrow::Cow, error::Error, str::FromStr, time::Duration};
+use std::{borrow::Cow, collections::HashSet, error::Error, str::FromStr, time::Duration};
 use tokio::io::{self, AsyncBufReadExt};
 
 pub async fn tokio_development_transport(
@@ -85,6 +86,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     #[behaviour(event_process = true)]
     struct MyBehaviour {
         kad: Kademlia<MemoryStore>,
+        identify: Identify,
+        // Helps us distinguish if this is a boot node or not
+        #[behaviour(ignore)]
+        i_am_boot: bool,
+        // We don't want to be re-adding those nodes that have already been added by the boot node
+        // as the Identify events will show up regularly
+        // This is only used by the boot node
+        #[behaviour(ignore)]
+        identify_cache: HashSet<PeerId>,
     }
 
     impl NetworkBehaviourEventProcess<KademliaEvent> for MyBehaviour {
@@ -112,11 +122,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         // I wanna see only the new peers added to the DHT
                         info!("{event:#?}");
                     } else {
-                        debug!("{event:#?}");
+                        trace!("{event:#?}");
                     }
                 }
                 other_kad_event => {
                     trace!("{other_kad_event:?}");
+                }
+            }
+        }
+    }
+
+    impl NetworkBehaviourEventProcess<IdentifyEvent> for MyBehaviour {
+        fn inject_event(&mut self, event: IdentifyEvent) {
+            if self.i_am_boot {
+                // This is only required for the boot node.
+                // I still don't understand exactly if this is normal but apparently
+                // when the boot node is added manually by other nodes it means that
+                // the boot node will not know what the listening addresses of those other nodes are.
+                // We are fixing it with the Identity protocol.
+                //
+                // Based on this discussion:
+                // https://github.com/libp2p/rust-libp2p/discussions/2447#discussioncomment-2053119
+                // Linked src by mxinden
+                // https://github.com/mxinden/rust-libp2p-server/blob/35aad8be33962d565ac8fe1cf63679418a1b1189/src/main.rs#L129-L156
+                //
+                // `identify_cache` is here to avoid reloggin and readding as this example is for some limited tests only
+                // and I don't anticipate a listening address change honestly
+                if let IdentifyEvent::Received { peer_id, info } = event {
+                    if !self.identify_cache.contains(&peer_id)
+                        && info.protocols.iter().any(|p| p.as_bytes() == PROTOCOL)
+                    {
+                        info!(
+                            "IdentifyEvent::Received, add addresses of {peer_id:?} {:#?}",
+                            info.listen_addrs
+                        );
+
+                        for addr in info.listen_addrs {
+                            self.kad.add_address(&peer_id, addr);
+                        }
+
+                        // Don't add nor log again
+                        self.identify_cache.insert(peer_id);
+                    }
+                } else {
+                    trace!("{event:#?}");
                 }
             }
         }
@@ -153,7 +202,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
         }
 
-        let behaviour = MyBehaviour { kad };
+        let behaviour = MyBehaviour {
+            kad,
+            // To fix UnroutablePeer errors in the boot node where we dunno what the listening adress of a peer is
+            identify: Identify::new(IdentifyConfig::new(
+                "/chris_chat/identify/1.0.0".to_string(),
+                my_key_public,
+            )),
+            i_am_boot: boot_peer_id.is_none(),
+            identify_cache: HashSet::new(),
+        };
 
         SwarmBuilder::new(transport, behaviour, my_peer_id)
             // We want the connection background tasks to be spawned onto the tokio runtime.
@@ -205,7 +263,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             _ = dump_interval.tick() => {
-                trace!("{:#?}", swarm.network_info());
+                // trace!("{:#?}", swarm.network_info());
                 info!(
                     "Peers conn.: {} kad.: {}",
                     swarm.connected_peers().count(),
