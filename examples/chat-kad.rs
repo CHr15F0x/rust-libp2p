@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         std::env::set_var("RUST_LOG", "chat_kad=info");
     }
 
-    env_logger::init();
+    env_logger::builder().format_timestamp(None).init();
 
     let boot_peer_id = std::env::args()
         .nth(1)
@@ -180,7 +180,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Do some logging regularly
-    let mut dump_interval = tokio::time::interval(Duration::from_secs(60));
+    let mut dump_interval = tokio::time::interval(Duration::from_secs(20));
 
     // Log the protocol name
     info!(
@@ -218,7 +218,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .unwrap_or_default()
                 );
                 // Show currently connected peers
-                debug!("Peers conn.: {:#?}", swarm.connected_peers().collect::<Vec<_>>());
+                trace!("Peers conn.: {:#?}", swarm.connected_peers().collect::<Vec<_>>());
                 // Show peers in the buckets
                 debug!(
                     "Peers kad.: {:#?}",
