@@ -13,6 +13,7 @@
 use futures::StreamExt;
 use libp2p::{
     core::{muxing, transport, upgrade},
+    floodsub::{self, Floodsub, FloodsubEvent},
     identify::{Identify, IdentifyConfig, IdentifyEvent},
     identity,
     kad::{record::store::MemoryStore, Kademlia, KademliaConfig, KademliaEvent, QueryResult},
@@ -56,6 +57,8 @@ pub async fn tokio_development_transport(
         .boxed())
 }
 
+const TOPIC: &str = "let's talk together";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     if std::env::var_os("RUST_LOG").is_none() {
@@ -96,14 +99,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let transport = tokio_development_transport(my_key).await?;
 
+    // Create a Floodsub topic
+    let floodsub_topic = floodsub::Topic::new(TOPIC);
+
     #[derive(NetworkBehaviour)]
     #[behaviour(event_process = true)]
     struct MyBehaviour {
         kad: Kademlia<MemoryStore>,
         identify: Identify,
+        floodsub: Floodsub,
         // Helps us distinguish if this is a boot node or not
         #[behaviour(ignore)]
         i_am_boot: bool,
+        #[behaviour(ignore)]
+        my_peer_id: PeerId,
         // We don't want to be re-adding those nodes that have already been added by the boot node
         // as the Identify events will show up regularly
         // This is only used by the boot node
@@ -128,15 +137,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 },
                 KademliaEvent::RoutingUpdated {
                     is_new_peer,
-                    peer: _,
-                    old_peer: _,
+                    peer,
+                    old_peer,
                     ..
                 } => {
                     if is_new_peer {
                         // I wanna see only the new peers added to the DHT
                         info!("KademliaEvent::{event:#?}");
-                    } else {
-                        trace!("KademliaEvent::{event:#?}");
+                    }
+
+                    if is_new_peer && peer != self.my_peer_id {
+                        info!("KademliaEvent::RoutingUpdated, floodsub add {peer:?}");
+                        self.floodsub.add_node_to_partial_view(peer);
+                    }
+
+                    if let Some(some_old_peer) = old_peer {
+                        info!("KademliaEvent::RoutingUpdated floodsub rm {some_old_peer:?}");
+                        self.floodsub.remove_node_from_partial_view(&some_old_peer);
                     }
                 }
                 other_kad_event => {
@@ -185,6 +202,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    impl NetworkBehaviourEventProcess<FloodsubEvent> for MyBehaviour {
+        fn inject_event(&mut self, event: FloodsubEvent) {
+            if let FloodsubEvent::Message(message) = event {
+                info!(
+                    "Floodsub Message: '{:?}' from {:?}",
+                    String::from_utf8_lossy(&message.data),
+                    message.source
+                );
+            }
+        }
+    }
+
     #[allow(non_snake_case)]
     let ONE_MINUTE = Duration::from_secs(60);
     #[allow(non_snake_case)]
@@ -214,16 +243,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
         }
 
-        let behaviour = MyBehaviour {
+        let mut behaviour = MyBehaviour {
             kad,
             // To fix UnroutablePeer errors in the boot node where we dunno what the listening adress of a peer is
             identify: Identify::new(IdentifyConfig::new(
                 "/chris_chat/identify/1.0.0".to_string(),
                 my_key_public,
             )),
+            floodsub: Floodsub::new(my_peer_id.clone()),
             i_am_boot: boot_peer_id.is_none(),
+            my_peer_id: my_peer_id.clone(),
             identify_cache: HashSet::new(),
         };
+
+        behaviour.floodsub.subscribe(floodsub_topic.clone());
 
         SwarmBuilder::new(transport, behaviour, my_peer_id)
             // We want the connection background tasks to be spawned onto the tokio runtime.
@@ -260,7 +293,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             line = stdin.next_line() => {
-                let _line = line?.expect("stdin closed");
+                let line = line?.expect("stdin closed");
+                swarm.behaviour_mut().floodsub.publish(floodsub_topic.clone(), line.as_bytes());
             }
             event = swarm.select_next_some() => {
                 match event {
