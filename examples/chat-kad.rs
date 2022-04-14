@@ -104,9 +104,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Helps us distinguish if this is a boot node or not
         #[behaviour(ignore)]
         i_am_boot: bool,
-        // We don't want to be re-adding those nodes that have already been added by the boot node
+        // We don't want to be re-adding those nodes that have already been added
         // as the Identify events will show up regularly
-        // This is only used by the boot node
         #[behaviour(ignore)]
         identify_cache: HashSet<PeerId>,
     }
@@ -148,39 +147,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     impl NetworkBehaviourEventProcess<IdentifyEvent> for MyBehaviour {
         fn inject_event(&mut self, event: IdentifyEvent) {
-            if self.i_am_boot {
-                // This is only required for the boot node.
-                // I still don't understand exactly if this is normal but apparently
-                // when the boot node is added manually by other nodes it means that
-                // the boot node will not know what the listening addresses of those other nodes are.
-                // We are fixing it with the Identity protocol.
-                //
-                // Based on this discussion:
-                // https://github.com/libp2p/rust-libp2p/discussions/2447#discussioncomment-2053119
-                // Linked src by mxinden
-                // https://github.com/mxinden/rust-libp2p-server/blob/35aad8be33962d565ac8fe1cf63679418a1b1189/src/main.rs#L129-L156
-                //
-                // `identify_cache` is here to avoid reloggin and readding as this example is for some limited tests only
-                // and I don't anticipate a listening address change honestly
-                if let IdentifyEvent::Received { peer_id, info } = event {
-                    if !self.identify_cache.contains(&peer_id)
-                        && info.protocols.iter().any(|p| p.as_bytes() == PROTOCOL)
-                    {
-                        info!(
-                            "IdentifyEvent::Received, add addresses of {peer_id:?} {:#?}",
-                            info.listen_addrs
-                        );
+            // When looking for closest peers to a key in return we only get peer IDs but no
+            // listening addresses of those peers.
+            // This is to know what the listening addresses of other nodes are.
+            //
+            // Based on this discussion:
+            // https://github.com/libp2p/rust-libp2p/discussions/2447#discussioncomment-2053119
+            // Linked src by mxinden
+            // https://github.com/mxinden/rust-libp2p-server/blob/35aad8be33962d565ac8fe1cf63679418a1b1189/src/main.rs#L129-L156
+            //
+            // `identify_cache` is here to avoid reloggin and readding as this example is for some limited tests only
+            // and I don't anticipate a listening address change honestly
+            if let IdentifyEvent::Received { peer_id, info } = event {
+                if !self.identify_cache.contains(&peer_id)
+                    && info.protocols.iter().any(|p| p.as_bytes() == PROTOCOL)
+                {
+                    info!(
+                        "IdentifyEvent::Received, add addresses of {peer_id:?} {:#?}",
+                        info.listen_addrs
+                    );
 
-                        for addr in info.listen_addrs {
-                            self.kad.add_address(&peer_id, addr);
-                        }
-
-                        // Don't add nor log again
-                        self.identify_cache.insert(peer_id);
+                    for addr in info.listen_addrs {
+                        self.kad.add_address(&peer_id, addr);
                     }
-                } else {
-                    trace!("IdentifyEvent::{event:#?}");
+
+                    // Don't add nor log again
+                    self.identify_cache.insert(peer_id);
                 }
+            } else {
+                trace!("IdentifyEvent::{event:#?}");
             }
         }
     }
@@ -247,8 +242,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Do some logging regularly
     let mut dump_interval = tokio::time::interval(Duration::from_secs(20));
 
-    // Re-bootstrap to see if it helps add more peers to the DHT
-    let mut rebootstrap_interval = tokio::time::interval(Duration::from_secs(60));
+    // Look for peers closest to some random key to see if it helps add more peers to the DHT
+    let mut closest_discovery_interval = tokio::time::interval(Duration::from_secs(60));
 
     // Log the protocol name
     info!(
@@ -301,9 +296,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .collect::<Vec<Vec<_>>>()
                 );
             }
-            _ = rebootstrap_interval.tick() => {
+            _ = closest_discovery_interval.tick() => {
                 if !swarm.behaviour_mut().i_am_boot {
-                    info!("Bootstrap: {:?}", swarm.behaviour_mut().kad.bootstrap());
+                    let rnd_key: PeerId = identity::Keypair::generate_ed25519().public().into();
+                    info!("Get closest peers to rnd key: {:?}",
+                        swarm.behaviour_mut().kad.get_closest_peers(rnd_key));
                 }
             }
         }
