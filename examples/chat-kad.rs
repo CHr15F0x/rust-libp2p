@@ -1,13 +1,13 @@
 //! Boot node
 //!
 //! ```sh
-//! cargo run --example chat-kad --features "tcp-tokio"
+//! cargo run --example chat-kad --features "tcp-tokio" -- -b
 //! ```
 //!
 //! Other nodes
 //!
 //! ```sh
-//! cargo run --example chat-kad --features "tcp-tokio" -- PeerId_of_Boot_Node
+//! cargo run --example chat-kad --features "tcp-tokio"
 //! ```
 
 use futures::StreamExt;
@@ -64,12 +64,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     env_logger::builder().format_timestamp(None).init();
 
-    let boot_peer_id = std::env::args()
-        .nth(1)
-        .map(|x| PeerId::from_str(&x).expect("A valid PeerId"));
+    let boot_secret = identity::ed25519::SecretKey::from_bytes([
+        186, 94, 235, 142, 154, 80, 34, 64, 1, 217, 93, 119, 94, 209, 51, 226, 225, 191, 141, 5,
+        251, 255, 214, 189, 103, 90, 198, 205, 175, 238, 170, 216,
+    ])
+    .unwrap();
+    let boot_key = identity::Keypair::Ed25519(identity::ed25519::Keypair::from(boot_secret));
 
-    // Create a random key for ourselves.
-    let my_key = identity::Keypair::generate_ed25519();
+    let (my_key, boot_peer_id) = match std::env::args().nth(1) {
+        // I am the boot node
+        Some(arg) => {
+            assert_eq!(arg, "-b", "Use -b to run a boot node!");
+            (boot_key, None)
+        }
+        // I am a normal node
+        None => (
+            identity::Keypair::generate_ed25519(),
+            Some(PeerId::from(boot_key.public())),
+        ),
+    };
+
     let my_key_public = my_key.public();
     let my_peer_id = PeerId::from(my_key_public.clone());
     info!("My peer id: {my_peer_id:?}");
@@ -173,8 +187,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     #[allow(non_snake_case)]
     let ONE_MINUTE = Duration::from_secs(60);
-    #[allow(non_snake_case)]
-    let TEN_MINUTES = Duration::from_secs(600);
     #[allow(non_snake_case)]
     let FOREVER: Option<Duration> = None;
 
